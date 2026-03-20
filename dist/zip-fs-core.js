@@ -3711,6 +3711,107 @@
 
 		async close() {
 		}
+
+		/**
+		 * 批量获取多个文件内容，自动合并 HTTP Range 请求
+		 */
+		async getMultipleData(entries, writerFactory, options = {}) {
+			const zipReader = this;
+			const {
+				mergeThreshold = 1024 * 1024,
+				maxRangeSize = 50 * 1024 * 1024,
+				onProgress,
+				...getDataOptions
+			} = options;
+
+			// 1. 计算每个文件的数据位置
+			const fileRanges = await Promise.all(entries.map(async entry => {
+				// 获取内部的 ZipEntry 对象
+				const reader = zipReader.reader;
+				const offset = entry.offset;
+				const diskNumberStart = entry.diskNumberStart;
+
+				const dataArray = await readUint8Array(reader, offset, HEADER_SIZE, diskNumberStart);
+				const dataView = getDataView$1(dataArray);
+				const localDirectory = {};
+				readCommonHeader(localDirectory, dataView, 4);
+
+				const dataOffset = offset + HEADER_SIZE +
+					localDirectory.filenameLength +
+					localDirectory.extraFieldLength;
+
+				return {
+					entry,
+					start: dataOffset,
+					end: dataOffset + entry.compressedSize,
+					size: entry.compressedSize,
+					diskNumberStart
+				};
+			}));
+
+			// 2. 排序并合并相邻 Range
+			fileRanges.sort((a, b) => a.start - b.start);
+			const mergedRanges = [];
+			let currentRange = null;
+
+			for (const fileRange of fileRanges) {
+				if (!currentRange) {
+					currentRange = { start: fileRange.start, end: fileRange.end, files: [fileRange] };
+				} else {
+					const gap = fileRange.start - currentRange.end;
+					const newSize = fileRange.end - currentRange.start;
+					if (gap <= mergeThreshold && newSize <= maxRangeSize) {
+						currentRange.end = fileRange.end;
+						currentRange.files.push(fileRange);
+					} else {
+						mergedRanges.push(currentRange);
+						currentRange = { start: fileRange.start, end: fileRange.end, files: [fileRange] };
+					}
+				}
+			}
+			if (currentRange) mergedRanges.push(currentRange);
+
+			console.log(`[Batch] ${entries.length} 文件 -> ${mergedRanges.length} 请求`);
+
+			// 3. 执行合并请求并处理
+			const results = new Map();
+			let completedCount = 0;
+
+			for (const mergedRange of mergedRanges) {
+				const mergedData = await readUint8Array(
+					zipReader.reader,
+					mergedRange.start,
+					mergedRange.end - mergedRange.start
+				);
+
+				for (const fileRange of mergedRange.files) {
+					const fileStart = fileRange.start - mergedRange.start;
+					const compressedData = mergedData.slice(fileStart, fileStart + fileRange.size);
+
+					// 创建自定义 Reader 直接提供数据
+					const customReader = new Uint8ArrayReader(compressedData);
+					await initStream(customReader);
+
+					const writer = writerFactory();
+
+					// 直接使用 entry 的标准 getData，但替换 reader
+					const originalReader = zipReader.reader;
+					zipReader.reader = customReader;
+
+					try {
+						const result = await fileRange.entry.getData(writer, getDataOptions);
+						results.set(fileRange.entry, result);
+					} finally {
+						zipReader.reader = originalReader;
+					}
+
+					completedCount++;
+					if (onProgress) onProgress(completedCount, entries.length);
+				}
+			}
+
+			return results;
+		}
 	}
 
 	let ZipEntry$1 = class ZipEntry {
