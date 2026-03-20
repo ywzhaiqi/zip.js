@@ -3826,6 +3826,7 @@ class ZipReader {
 			);
 
 			// 处理每个文件
+			let finalData = null;
 			for (const range of mergedRange.files) {
 				// 从合并数据中提取 header
 				const headerStart = range.offset - mergedRange.start;
@@ -3852,9 +3853,9 @@ class ZipReader {
 					const completeData = new Uint8Array(dataEnd);
 					completeData.set(mergedData);
 					completeData.set(additionalData, mergedData.length);
-					var finalData = completeData;
+					finalData = completeData;
 				} else {
-					var finalData = mergedData;
+					finalData = mergedData;
 				}
 
 				// 提取这个文件的完整数据
@@ -3863,7 +3864,7 @@ class ZipReader {
 				// 创建自定义 Reader
 				const customReader = {
 					size: fileCompleteData.length,
-					readUint8Array: async (offset, length) => fileCompleteData.slice(offset, offset + length)
+					readUint8Array: (offset, length) => fileCompleteData.slice(offset, offset + length)
 				};
 
 				Object.defineProperty(customReader, 'readable', {
