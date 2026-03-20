@@ -14,6 +14,45 @@ See https://gildas-lormeau.github.io/zip-manager
 
 See here for more info: https://gildas-lormeau.github.io/zip.js/
 
+# New Features
+
+## getMultipleData
+
+```js
+import { ZipReader, HttpRangeReader, Uint8ArrayWriter } from '@zip.js/zip.js';
+ 
+// 打开远程 ZIP 文件
+const reader = new HttpRangeReader('https://example.com/large.zip');
+const zipReader = new ZipReader(reader);
+const entries = await zipReader.getEntries();
+ 
+// 选择要下载的文件
+const targetFiles = entries.filter(e => 
+  !e.directory && e.filename.endsWith('.jpg')
+);
+ 
+// 批量获取（自动合并 Range 请求）
+const results = await zipReader.getMultipleData(
+  targetFiles,
+  () => new Uint8ArrayWriter(),
+  {
+    mergeThreshold: 2 * 1024 * 1024,  // 2MB 间隙内合并
+    maxRangeSize: 100 * 1024 * 1024,   // 单次最大 100MB
+    onProgress: (done, total) => {
+      console.log(`进度: ${done}/${total}`);
+    }
+  }
+);
+ 
+// 处理结果
+for (const [entry, data] of results) {
+  console.log(`${entry.filename}: ${data.byteLength} bytes`);
+  // 可以保存到本地等操作
+}
+ 
+await zipReader.close();
+```
+
 # Examples
 
 ## Hello world

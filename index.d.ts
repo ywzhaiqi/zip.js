@@ -1122,6 +1122,26 @@ export interface FileEntry extends EntryMetaData {
     options?: EntryGetDataCheckPasswordOptions
   ): Promise<Type>;
   /**
+   * 批量获取多个文件内容，自动合并 HTTP Range 请求以优化性能
+   * 
+   * @param entries 要获取的文件条目数组
+   * @param writerFactory 创建 Writer 实例的工厂函数
+   * @param options 选项
+   * @returns Promise resolving to a Map of entries to their data
+   */
+  getMultipleData<Type>(
+    entries: FileEntry[],
+    writerFactory: () => Writer<Type> | WritableWriter | WritableStream,
+    options?: EntryGetDataOptions & {
+      /** Range 合并阈值（字节）。两个文件间隙小于此值会合并请求 */
+      mergeThreshold?: number;
+      /** 单个合并 Range 的最大大小（字节） */
+      maxRangeSize?: number;
+      /** 进度回调 */
+      onProgress?: (completed: number, total: number) => void;
+    }
+  ): Promise<Map<FileEntry, Type>>;
+  /**
    * Retrieves the content of the entry as an `ArrayBuffer` instance
    *
    * @param options The options.
