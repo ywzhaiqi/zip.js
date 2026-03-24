@@ -16,6 +16,29 @@ See here for more info: https://gildas-lormeau.github.io/zip.js/
 
 # New Features
 
+## GM_xmlhttpRequest 支持
+
+在油猴脚本（Tampermonkey / Violentmonkey）中运行时，可以使用 `useGM` 选项通过 `GM_xmlhttpRequest` 读取远程 ZIP 文件，解决跨域问题。
+
+```js
+import { ZipReader, HttpReader } from '@zip.js/zip.js';
+
+// 使用 GM_xmlhttpRequest 读取远程 ZIP 文件
+const reader = new HttpReader('https://example.com/file.zip', { 
+  useGM: true,
+  useRangeHeader: true 
+});
+const zipReader = new ZipReader(reader);
+const entries = await zipReader.getEntries();
+await zipReader.close();
+```
+
+**选项说明：**
+- `useGM: true` - 强制使用 GM_xmlhttpRequest
+- `useRangeHeader: true` - 使用 Range 请求，支持断点续传和大文件
+
+**注意：** 需要在油猴脚本环境中运行，或者自行注入 `GM_xmlhttpRequest` 到页面中。
+
 ## getMultipleData
 
 ```js
