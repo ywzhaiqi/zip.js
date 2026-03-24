@@ -200,6 +200,7 @@
 
 	const ERR_HTTP_STATUS = "HTTP error ";
 	const ERR_HTTP_RANGE = "HTTP Range not supported";
+	const ERR_GM_XHR_NOT_AVAILABLE = "GM_xmlhttpRequest is not available";
 	const ERR_ITERATOR_COMPLETED_TOO_SOON = "Writer iterator completed too soon";
 	const ERR_WRITER_NOT_INITIALIZED = "Writer not initialized";
 
@@ -470,12 +471,30 @@
 		}
 	}
 
+	class GMReader extends Reader {
+
+		constructor(url, options) {
+			super();
+			createHttpReader(this, url, options);
+		}
+
+		async init() {
+			await initHttpReader(this, sendGMXmlhttpRequest, getGMRequestData);
+			super.init();
+		}
+
+		readUint8Array(index, length) {
+			return readUint8ArrayHttpReader(this, index, length, sendGMXmlhttpRequest, getGMRequestData);
+		}
+	}
+
 	function createHttpReader(httpReader, url, options) {
 		const {
 			preventHeadRequest,
 			useRangeHeader,
 			forceRangeRequests,
-			combineSizeEocd
+			combineSizeEocd,
+			useGM
 		} = options;
 		options = Object.assign({}, options);
 		delete options.preventHeadRequest;
@@ -483,13 +502,15 @@
 		delete options.forceRangeRequests;
 		delete options.combineSizeEocd;
 		delete options.useXHR;
+		delete options.useGM;
 		Object.assign(httpReader, {
 			url,
 			options,
 			preventHeadRequest,
 			useRangeHeader,
 			forceRangeRequests,
-			combineSizeEocd
+			combineSizeEocd,
+			useGM
 		});
 	}
 
@@ -499,13 +520,26 @@
 			preventHeadRequest,
 			useRangeHeader,
 			forceRangeRequests,
-			combineSizeEocd
+			combineSizeEocd,
+			useGM
 		} = httpReader;
 		if (isHttpFamily(url) && (useRangeHeader || forceRangeRequests) && (typeof preventHeadRequest == "undefined" || preventHeadRequest)) {
 			const response = await sendRequest(HTTP_METHOD_GET, httpReader, getRangeHeaders(httpReader, combineSizeEocd ? -END_OF_CENTRAL_DIR_LENGTH : undefined));
 			const acceptRanges = response.headers.get(HTTP_HEADER_ACCEPT_RANGES);
 			if (!forceRangeRequests && (!acceptRanges || acceptRanges.toLowerCase() != HTTP_RANGE_UNIT)) {
-				throw new Error(ERR_HTTP_RANGE);
+				if (useGM) {
+					const contentLength = response.headers.get(HTTP_HEADER_CONTENT_LENGTH);
+					if (contentLength) {
+						httpReader.size = Number(contentLength);
+						if (combineSizeEocd) {
+							httpReader.eocdCache = new Uint8Array(await response.arrayBuffer());
+						}
+						return;
+					}
+					await getContentLength(httpReader, sendRequest, getRequestData);
+				} else {
+					throw new Error(ERR_HTTP_RANGE);
+				}
 			} else {
 				if (combineSizeEocd) {
 					httpReader.eocdCache = new Uint8Array(await response.arrayBuffer());
@@ -538,7 +572,8 @@
 			forceRangeRequests,
 			eocdCache,
 			size,
-			options
+			options,
+			useGM
 		} = httpReader;
 		if (useRangeHeader || forceRangeRequests) {
 			if (eocdCache && index == size - END_OF_CENTRAL_DIR_LENGTH && length == END_OF_CENTRAL_DIR_LENGTH) {
@@ -551,10 +586,19 @@
 					length = size - index;
 				}
 				const response = await sendRequest(HTTP_METHOD_GET, httpReader, getRangeHeaders(httpReader, index, length));
-				if (response.status != 206) {
+				if (response.status == 206) {
+					return new Uint8Array(await response.arrayBuffer());
+				} else if (useGM) {
+					const contentLength = Number(response.headers.get(HTTP_HEADER_CONTENT_LENGTH));
+					if (contentLength) {
+						httpReader.size = contentLength;
+						const data = new Uint8Array(await response.arrayBuffer());
+						return data.subarray(index, index + length);
+					}
+					throw new Error(ERR_HTTP_RANGE);
+				} else {
 					throw new Error(ERR_HTTP_RANGE);
 				}
-				return new Uint8Array(await response.arrayBuffer());
 			}
 		} else {
 			const { data } = httpReader;
@@ -586,6 +630,10 @@
 
 	async function getXMLHttpRequestData(httpReader) {
 		await getRequestData(httpReader, sendXMLHttpRequest);
+	}
+
+	async function getGMRequestData(httpReader) {
+		await getRequestData(httpReader, sendGMXmlhttpRequest);
 	}
 
 	async function getRequestData(httpReader, sendRequest) {
@@ -651,13 +699,67 @@
 		});
 	}
 
+	const hasGM = (typeof GM_xmlhttpRequest !== 'undefined');
+	const gmRequest = (hasGM) ? GM_xmlhttpRequest : (typeof GM !== 'undefined' && GM.xmlHttpRequest ? GM.xmlHttpRequest : null);
+
+	function sendGMXmlhttpRequest(method, { url }, headers) {
+		return new Promise((resolve, reject) => {
+			if (!GM_xmlhttpRequest) {
+				reject(new Error(ERR_GM_XHR_NOT_AVAILABLE));
+				return;
+			}
+			gmRequest({
+				method,
+				url,
+				headers,
+				responseType: "arraybuffer",
+				onload: (resp) => {
+					if (resp.status >= 200 && resp.status < 300) {
+						const headersArray = [];
+						const responseHeaders = typeof resp.responseHeaders === "string" ?
+							resp.responseHeaders.trim().split(/[\r\n]+/).map(header => header.trim().split(/\s*:\s*/)) :
+							Object.entries(resp.responseHeaders || {}).map(([key, value]) => [key, value]);
+						responseHeaders.forEach(([key, value]) => {
+							headersArray.push([key.trim().replace(/^[a-z]|-[a-z]/g, v => v.toUpperCase()), value]);
+						});
+						let data = resp.response;
+						if (typeof data === "string") {
+							const buf = new Uint8Array(data.length);
+							for (let i = 0; i < data.length; i++) {
+								buf[i] = data.charCodeAt(i);
+							}
+							data = buf.buffer;
+						}
+						resolve({
+							status: resp.status,
+							arrayBuffer: () => data,
+							headers: new Map(headersArray)
+						});
+					} else {
+						reject(resp.status == 416 ? new Error(ERR_HTTP_RANGE) : new Error(ERR_HTTP_STATUS + resp.status));
+					}
+				},
+				onerror: (err) => reject(new Error("GM_xmlhttpRequest error: " + (err ? err.error || JSON.stringify(err) : "Unknown error")))
+			});
+		});
+	}
+
 	class HttpReader extends Reader {
 
 		constructor(url, options = {}) {
 			super();
+			const useGM = options.useGM;
+			let ReaderClass;
+			if (useGM) {
+				ReaderClass = GMReader;
+			} else if (options.useXHR) {
+				ReaderClass = XHRReader;
+			} else {
+				ReaderClass = FetchReader;
+			}
 			Object.assign(this, {
 				url,
-				reader: options.useXHR ? new XHRReader(url, options) : new FetchReader(url, options)
+				reader: new ReaderClass(url, options)
 			});
 		}
 
