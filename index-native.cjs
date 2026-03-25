@@ -2945,10 +2945,13 @@ function sendXMLHttpRequest(method, { url }, headers) {
 	});
 }
 
+const gmUrlCache = new Map();
+
 const hasGM = (typeof GM_xmlhttpRequest !== 'undefined');
 const gmRequest = (hasGM) ? GM_xmlhttpRequest : (typeof GM !== 'undefined' && GM.xmlHttpRequest ? GM.xmlHttpRequest : null);
 
 function sendGMXmlhttpRequest(method, { url }, headers) {
+	const finalUrl = gmUrlCache.get(url) || url;
 	return new Promise((resolve, reject) => {
 		if (!GM_xmlhttpRequest) {
 			reject(new Error(ERR_GM_XHR_NOT_AVAILABLE));
@@ -2956,11 +2959,14 @@ function sendGMXmlhttpRequest(method, { url }, headers) {
 		}
 		gmRequest({
 			method,
-			url,
+			url: finalUrl,
 			headers,
 			responseType: "arraybuffer",
 			onload: (resp) => {
 				if (resp.status >= 200 && resp.status < 300) {
+					if (resp.finalUrl && resp.finalUrl !== finalUrl) {
+						gmUrlCache.set(url, resp.finalUrl);
+					}
 					const headersArray = [];
 					const responseHeaders = typeof resp.responseHeaders === "string" ?
 						resp.responseHeaders.trim().split(/[\r\n]+/).map(header => header.trim().split(/\s*:\s*/)) :
@@ -2978,6 +2984,7 @@ function sendGMXmlhttpRequest(method, { url }, headers) {
 					}
 					resolve({
 						status: resp.status,
+						finalUrl: resp.finalUrl,
 						arrayBuffer: () => data,
 						headers: new Map(headersArray)
 					});
