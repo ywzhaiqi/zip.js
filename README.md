@@ -26,7 +26,12 @@ import { ZipReader, HttpReader } from '@zip.js/zip.js';
 // 使用 GM_xmlhttpRequest 读取远程 ZIP 文件
 const reader = new HttpReader('https://example.com/file.zip', { 
   useGM: true,
-  useRangeHeader: true 
+  useRangeHeader: true,
+  // forceRangeRequests: true,  // 跳过检查 acceptRanges bytes
+  // 自定义请求头
+  headers: {
+    'User-Agent': 'zip.js/1.0.0'
+  }
 });
 const zipReader = new ZipReader(reader);
 const entries = await zipReader.getEntries();
